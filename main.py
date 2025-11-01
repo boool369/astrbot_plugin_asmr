@@ -10,7 +10,6 @@ from pathlib import Path
 from math import ceil
 
 from astrbot.api.event import filter, AstrMessageEvent
-# 确保只导入 Plain
 from astrbot.api.message_components import Plain 
 from astrbot.api.star import Context, Star, register
 from astrbot.core.config.astrbot_config import AstrBotConfig
@@ -31,7 +30,6 @@ BASE_URLS = [
     "https://api.asmr-200.com",
     "https://api.asmr-300.com"
 ]
-# 匹配 RJ+数字 或 纯数字
 RJ_RE = re.compile(r"(?:RJ)?(?P<id>\d+)", re.IGNORECASE) 
 
 # --- 辅助函数：文件处理和格式化 ---
@@ -70,10 +68,36 @@ def recursively_transform_data(data: List[Dict[str, Any]], all_files: List[Dict[
     "astrbot_plugin_asmr",
     "boool369",
     "ASMR音声搜索、播放与下载", 
-    "3.3", # 配置重构版本
+    "3.4", # 最终配置兼容版本
     "https://github.com/boool369/astrbot_plugin_asmr" 
 )
 class AsmrPlugin(Star):
+    
+    # 核心修正：添加 get_plugin_config_template 方法
+    @staticmethod
+    def get_plugin_config_template() -> Dict[str, Any]:
+        """定义插件的配置模板，让 astrbot 框架知道插件支持哪些配置项"""
+        return {
+            "enable_nsfw": {
+                "description": "是否启用nsfw搜索结果",
+                "hint": "开启后在搜索时显示R18/NSFW结果",
+                "type": "bool",
+                "default": True
+            },
+            "download_base_dir": {
+                "description": "下载文件的根目录相对路径",
+                "hint": "文件将保存在此路径下。此路径相对于astrbot根目录。",
+                "type": "str",
+                "default": "Downloads/ASMR_Files"
+            },
+            "max_concurrent_downloads": {
+                "description": "最大并发下载线程数",
+                "hint": "限制同时进行的文件下载数量，避免网络拥堵或资源耗尽。",
+                "type": "int",
+                "default": 3
+            }
+        }
+        
     def __init__(self, context: Context, config: AstrBotConfig=None):
         super().__init__(context)
         self.timeout = 30
@@ -82,14 +106,14 @@ class AsmrPlugin(Star):
         self.plugin_dir = Path(__file__).parent
         self.template_path = self.plugin_dir / "md.html"
         
-        # --- 读取配置项 ---
-        # 使用 .get(key, default_value) 确保没有配置时也能正常工作
+        # --- 读取配置项（现在配置一定会被正确加载或使用默认值）---
+        # config 对象现在是经过框架处理的，包含了模板中定义的所有键。
         self.nsfw = config.get("enable_nsfw", True)
         self.download_base_dir = Path(config.get("download_base_dir", "Downloads/ASMR_Files"))
         self.max_concurrent_downloads = config.get("max_concurrent_downloads", 3)
         # ------------------
         
-        logger.info(f"[ASMR Plugin V3.3] 初始化成功。NSFW:{self.nsfw}, 下载路径:{self.download_base_dir}, 并发:{self.max_concurrent_downloads}")
+        logger.info(f"[ASMR Plugin V3.4] 初始化成功。NSFW:{self.nsfw}, 下载路径:{self.download_base_dir}, 并发:{self.max_concurrent_downloads}")
 
     async def rotate_api(self):
         """切换到下一个API端点"""
@@ -136,7 +160,7 @@ class AsmrPlugin(Star):
         """显示本ASMR插件的所有功能和用法示例。"""
         
         help_message = (
-            "### 🎧 ASMR 音声插件功能 (V3.3 配置版)\n"
+            "### 🎧 ASMR 音声插件功能 (V3.4 最终配置版)\n"
             "---"
             "**1. 🔍 搜索功能**\n"
             "   - **命令**: `搜音声 <关键词>/<标签> [页数]`\n"
@@ -152,13 +176,13 @@ class AsmrPlugin(Star):
             "---"
             "当前配置:\n"
             f"   - NSFW 启用: {self.nsfw}\n"
-            f"   - 下载根目录: {self.download_base_dir}\n"
+            f"   - 下载根目录: {self.download_base_dir.as_posix()}\n"
             f"   - 并发数: {self.max_concurrent_downloads}\n"
         )
         
         yield event.plain_result(help_message)
             
-    # --- 命令：搜音声 (此部分不变) ---
+    # --- 命令：搜音声 (略，未修改) ---
     
     @filter.command("搜音声")
     async def search_asmr(self, event: AstrMessageEvent):
@@ -233,7 +257,7 @@ class AsmrPlugin(Star):
             logger.error(f"[Search Error] 搜索音声失败: {str(e)}")
             yield event.plain_result("搜索音声失败，请稍后再试")
 
-    # --- 命令：听音声 (此部分不变) ---
+    # --- 命令：听音声 (略，未修改) ---
     
     @filter.command("听音声")
     async def play_asmr(self, event: AstrMessageEvent):
@@ -300,7 +324,7 @@ class AsmrPlugin(Star):
 
     @filter.command("随机音声")
     async def play_Random_asmr(self, event: AstrMessageEvent):
-        # ... (此部分不变) ...
+        # ... (略，未修改) ...
         yield event.plain_result(f"正在随机抽取音声！")
         
         try:
@@ -360,7 +384,7 @@ class AsmrPlugin(Star):
             yield event.plain_result("播放随机音声失败，请稍后再试")
 
     async def get_asmr(self, event: AstrMessageEvent, rid: str, r, selected_index: int = None):
-        # ... (此部分不变) ...
+        # ... (略，未修改) ...
         name = r["title"]
         ar = r["name"]
         img = r["mainCoverUrl"]
@@ -427,7 +451,7 @@ class AsmrPlugin(Star):
 
     async def _play_track(self, event: AstrMessageEvent, index: int, keywords: list, 
                           urls: list, name: str, ar: str, img: str, rid: str):
-        # ... (此部分不变) ...
+        # ... (略，未修改) ...
         if index < 0:
             index = 0
         elif index >= len(urls):
@@ -504,7 +528,7 @@ class AsmrPlugin(Star):
     async def download_worker(self, session: aiohttp.ClientSession, semaphore: asyncio.Semaphore, 
                               file_info: Dict[str, Any], base_dir: Path, event: AstrMessageEvent) -> bool:
         """处理单个文件的下载，支持断点续传"""
-        
+        # ... (下载逻辑略，未修改) ...
         file_url = file_info.get('url')
         file_name = file_info['title']
         expected_size = file_info.get('size', 0)
@@ -548,10 +572,7 @@ class AsmrPlugin(Star):
                     logger.info(f"[Download] 开始下载: {file_name} (总大小 {format_size(total_size)})")
                     
                     async with aiofiles.open(full_path, mode) as f:
-                        # 使用 tqdm 封装 iter_chunked (仅用于记录日志，不涉及终端输出)
                         pbar_iter = response.content.iter_chunked(8192)
-                        # 注意：由于是在插件后台运行，这里不适合直接显示 tqdm 终端进度条
-                        # 仅保留 iter_chunked 的功能
                         async for chunk in pbar_iter: 
                             await f.write(chunk)
 
@@ -571,8 +592,7 @@ class AsmrPlugin(Star):
         summary_msg += f"- **总文件数**: {len(final_files)}\n"
         summary_msg += f"- **成功下载/跳过**: {success_count}\n"
         summary_msg += f"- **失败数**: {len(final_files) - success_count}\n"
-        # 优化路径显示，使用相对路径
-        summary_msg += f"文件已保存在机器人服务器的: `{self.download_base_dir.name}/{output_dir.name}/` 目录下。"
+        summary_msg += f"文件已保存在机器人服务器的: `{self.download_base_dir.as_posix()}/{output_dir.name}/` 目录下。"
         
         await event.send(event.plain_result(summary_msg))
 
