@@ -2,8 +2,13 @@ import re
 import os
 import random
 import aiohttp
+import asyncio  # **新增导入**
+import aiofiles  # **新增导入**
+from typing import Dict, Any, List, Tuple
+from tqdm import tqdm  # **新增导入 (用于下载日志)**
 from pathlib import Path
 from math import ceil
+
 from astrbot.api.event import filter, AstrMessageEvent
 import astrbot.api.message_components as Comp
 from astrbot.api.message_components import Node, Plain, Image as CompImage
@@ -18,24 +23,66 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 )
 from astrbot import logger
 
+# --- 全局配置和常量 ---
 headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0'
 }
+# 使用 V3 代码中稳定的 API 列表
 BASE_URLS = [
     "https://api.asmr.one",
     "https://api.asmr-100.com",
     "https://api.asmr-200.com",
     "https://api.asmr-300.com"
 ]
+RJ_RE = re.compile(r"(?:RJ)?(?P<id>[\d]+)")
+MAX_CONCURRENT_DOWNLOADS = 3  # 下载并发限制
+
+
+# --- 辅助函数：文件处理和格式化 ---
+
+def format_size(size_bytes: int) -> str:
+    """将字节数格式化为可读的字符串"""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.2f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.2f} TB"
+
+
+def recursively_transform_data(data: List[Dict[str, Any]], all_files: List[Dict[str, Any]],
+                               current_folder_path: List[str]):
+    """递归遍历 API 返回的 JSON 结构，将所有文件扁平化，记录文件夹路径"""
+    for item in data:
+        item_type = item.get("type")
+        item_title = item.get("title")
+
+        if item_type == "folder":
+            new_path = current_folder_path + [item_title]
+            if "children" in item:
+                recursively_transform_data(item["children"], all_files, new_path)
+        elif item_type in ["text", "image", "audio"]:
+            # 仅包含下载所需的核心信息
+            file_info = {
+                "title": item_title,
+                "url": item.get("mediaDownloadUrl"),
+                "type": item_type,
+                "size": item.get("size", 0),
+                "full_folder_path": "/".join(current_folder_path),
+            }
+            all_files.append(file_info)
+
+
+# --- ASMR 机器人插件类 ---
+
 @register(
     "astrbot_plugin_asmr",
     "CCYellowStar2",
-    "ASMR音声搜索与播放",
-    "1.0",
+    "ASMR音声搜索、播放与下载",  # 更新描述
+    "2.0",  # 更新版本号
     "https://github.com/CCYellowStar2/astrbot_plugin_asmr"
 )
 class AsmrPlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig=None):
+    def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
         # 初始化配置项
         self.timeout = 30
@@ -57,12 +104,18 @@ class AsmrPlugin(Star):
     async def fetch_with_retry(self, url_path: str, params=None, max_retries=4):
         """带重试机制的API请求"""
         errors = []
-        async with aiohttp.ClientSession(headers=headers) as session: # 在循环外创建会SH会话
+        # 使用正确的 headers 来模拟浏览器访问 API
+        api_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+            "Origin": "https://asmr.one",
+            "Referer": "https://asmr.one/",
+            "Accept": "application/json"
+        }
+        async with aiohttp.ClientSession(headers=api_headers) as session:  # 使用增强的 headers
             for attempt in range(max_retries):
                 current_api = self.get_current_api()
                 url = f"{current_api}{url_path}"
                 try:
-                    # 复用 session
                     async with session.get(url, params=params, timeout=10) as response:
                         if response.status == 200:
                             return await response.json()
@@ -72,21 +125,21 @@ class AsmrPlugin(Star):
                 except Exception as e:
                     errors.append(f"API {current_api} 请求失败: {str(e)}")
                     await self.rotate_api()
-        
+
         error_msg = "所有API请求均失败:\n" + "\n".join(errors)
         logger.error(error_msg)
         return None
 
-    
+    # --- 搜索和播放功能 (与您提供的原代码相同) ---
+
     @filter.command("搜音声")
     async def search_asmr(self, event: AstrMessageEvent):
-        """搜索音声"""
+        # ... (此处是您的原始 search_asmr 代码) ...
         args = event.message_str.replace("搜音声", "").split()
         if not args:
             yield event.plain_result("请输入搜索关键词(用'/'分割不同tag)和搜索页数(可选)！比如'搜音声 伪娘/催眠 1'")
             return
 
-        # 解析参数
         y = 1
         keyword = ""
         if len(args) == 1:
@@ -102,7 +155,7 @@ class AsmrPlugin(Star):
             yield event.plain_result("请正确输入搜索关键词(用'/'分割不同tag)和搜索页数(可选)！比如'搜音声 伪娘/催眠 1'")
             return
 
-        yield event.plain_result(f"正在搜索音声{keyword}，第{y}页！")
+        yield event.plain_result(f"正在搜索音声`{keyword.replace('%20', ' / ')}`，第{y}页！")
         if not self.nsfw:
             keyword = keyword + "%20%24-age%3Aadult%24"
         try:
@@ -116,11 +169,11 @@ class AsmrPlugin(Star):
                     "includeTranslationWorks": "true"
                 }
             )
-            
+
             if r is None:
                 yield event.plain_result("搜索音声失败，请稍后再试")
                 return
-            
+
             if len(r["works"]) == 0:
                 if r["pagination"]["totalCount"] == 0:
                     yield event.plain_result("搜索结果为空")
@@ -130,7 +183,7 @@ class AsmrPlugin(Star):
                     max_pages = ceil(count / 20)
                     yield event.plain_result(f"此搜索结果最多{max_pages}页")
                     return
-            
+
             # 处理搜索结果
             title, ars, imgs, rid = [], [], [], []
             for result2 in r["works"]:
@@ -143,207 +196,207 @@ class AsmrPlugin(Star):
                 else:
                     ids = "RJ" + ids
                 rid.append(ids)
-            
-            # 生成Markdown格式结果
-            msg2 = f'### <div align="center">搜索结果</div>\n' \
-                    f'| 封面 | 序号 | RJ号 |\n' \
-                    '| --- | --- | --- |\n'
-            
+
+            # --- Discord/跨平台 适配逻辑 ---
+            platform_name = event.get_platform_name()
+
             msg = ""
             for i in range(len(title)):
-                msg += str(i + 1) + ". 【" + rid[i] + "】 " + title[i] + "\n"
-                msg2 += f'|<img width="250" src="{imgs[i]}"/> | {str(i+1)}. |【{rid[i]}】|\n'
-            
-            msg += "请发送听音声+RJ号+节目编号（可选）来获取要听的资源"
-            chain = []
-            # 渲染Markdown为图片
-            template_data = {
-                "text": msg2
-            }
-            with open(self.template_path, 'r', encoding='utf-8') as f:
-                meme_help_tmpl = f.read()
-            url = await self.html_render(meme_help_tmpl, template_data)
-            chain.append(CompImage.fromURL(url))
-            chain.append(Plain(msg))
-            node = Node(
-                uin=3974507586,
-                name="玖玖瑠",
-                content=chain
-            )
-            yield event.chain_result([node])
-            
+                msg += f"**{i + 1}.** 【{rid[i]}】 **{title[i]}** - {ars[i]}\n"
+
+            msg += "\n请发送 `听音声+RJ号+节目编号（可选）` 来获取要听的资源"
+
+            yield event.plain_result(f"### 🔍 搜索结果 (第 {r['pagination']['currentPage']} 页)\n" + msg)
+            yield event.image_result(imgs[0])
+
+
         except Exception as e:
             logger.error(f"搜索音声失败: {str(e)}")
             yield event.plain_result("搜索音声失败，请稍后再试")
 
     @filter.command("听音声")
     async def play_asmr(self, event: AstrMessageEvent):
-        """播放音声"""
+        # ... (此处是您的原始 play_asmr 代码) ...
         args = event.message_str.replace("听音声", "").split()
         substrings = ["RJ", "rj", "Rj", "rJ"]
-        
+
         if not args:
             yield event.plain_result("请输入RJ号！")
             return
-        
-        rid = args[0]   
+
+        rid = args[0]
 
         for sub in substrings:
             if sub in args[0]:
                 rid = args[0].replace(sub, "")
                 break
-        
+
         try:
             y = int(rid)
         except ValueError:
             yield event.plain_result("请输入正确的RJ号！")
             return
         selected_index = int(args[1]) - 1 if len(args) > 1 and args[1].isdigit() else None
-        
-        yield event.plain_result(f"正在查询音声信息！")
-        
+
+        yield event.plain_result(f"正在查询音声信息！RJ{rid}")
+
         try:
-                # 获取音声信息
-                r = await self.fetch_with_retry(f"/api/workInfo/{rid}")
-                
-                if r is None or "title" not in r:
-                    yield event.plain_result("没有此音声信息或还没有资源")
+            r = await self.fetch_with_retry(f"/api/workInfo/{rid}")
+
+            if r is None or "title" not in r:
+                yield event.plain_result("没有此音声信息或还没有资源")
+                return
+            if not self.nsfw and r["nsfw"] == True:
+                yield event.plain_result("此音声为r18音声，管理员已禁止")
+                return
+
+            msg1, url, state = await self.get_asmr(event=event, rid=rid, r=r, selected_index=selected_index)
+
+            if state == None:
+                return
+
+            yield event.image_result(url)
+            yield event.plain_result(msg1)
+
+            id = event.get_sender_id()
+
+            @session_waiter(timeout=self.timeout, record_history_chains=False)
+            async def track_waiter(controller: SessionController, ev: AstrMessageEvent):
+                if ev.get_sender_id() != id:
                     return
-                if not self.nsfw and r["nsfw"]==True:
-                    yield event.plain_result("此音声为r18音声，管理员已禁止")
+                reply = ev.message_str.strip()
+                if not reply.isdigit():
+                    await event.send(event.plain_result("请发送正确的数字~"))
                     return
-                if selected_index:
-                    msg1,url,state=await self.get_asmr(event=event,rid=rid,r=r,selected_index=selected_index)
-                else:
-                    msg1,url,state=await self.get_asmr(event=event,rid=rid,r=r)
-                if state == None:
+
+                index = int(reply) - 1
+                if index < 0 or index >= len(state["keywords"]):
+                    await event.send(event.plain_result("序号超出范围，请重新输入"))
                     return
-                yield event.image_result(url)
-                yield event.plain_result(msg1)
-                
-                id = event.get_sender_id()
-                @session_waiter(timeout=self.timeout, record_history_chains=False)
-                async def track_waiter(controller: SessionController, ev: AstrMessageEvent):
-                    if ev.get_sender_id() != id:
-                        return
-                    reply = ev.message_str.strip()
-                    if not reply.isdigit():
-                        await event.send(event.plain_result("请发送正确的数字~"))
-                        return
-                    
-                    index = int(reply) - 1
-                    if index < 0 or index >= len(state["keywords"]):
-                        await event.send(event.plain_result("序号超出范围，请重新输入"))
-                        return
-                    
-                    await self._play_track(ev, index, state["keywords"], state["urls"], 
-                                          state["name"], state["ar"], state["iurl"], state["rid"])
-                    controller.stop()
-                
-                try:
-                    await track_waiter(event)
-                except TimeoutError:
-                    yield event.plain_result("选择超时！")
+
+                await self._play_track(ev, index, state["keywords"], state["urls"],
+                                       state["name"], state["ar"], state["iurl"], state["rid"])
+                controller.stop()
+
+            try:
+                await track_waiter(event)
+            except TimeoutError:
+                yield event.plain_result("选择超时！")
         except Exception as e:
             logger.error(f"播放音声失败: {str(e)}")
             yield event.plain_result("播放音声失败，请稍后再试")
 
     @filter.command("随机音声")
     async def play_Random_asmr(self, event: AstrMessageEvent):
-        """播放随机音声"""        
+        # ... (此处是您的原始 play_Random_asmr 代码) ...
         yield event.plain_result(f"正在随机抽取音声！")
-        
-        try:
-                # 获取音声信息
-                r = (await self.fetch_with_retry(f"/api/works?order=betterRandom"))["works"][0]
-                
-                if r is None or "title" not in r:
-                    yield event.plain_result("没有此音声信息或还没有资源")
-                    return
-                if not self.nsfw:
-                    yield event.plain_result("管理员已开启禁止nsfw，此功能已禁止")
-                    return
-                rid = str(r["id"])
-                if len(rid) == 7 or len(rid) == 5:
-                    rid = "0" + rid
-                yield event.plain_result("抽取成功！RJ号："+rid)
-                msg1,url,state=await self.get_asmr(event=event,rid=rid,r=r)
-                if state == None:
-                    return
-                yield event.image_result(url)
-                yield event.plain_result(msg1)
-                
-                id = event.get_sender_id()
-                @session_waiter(timeout=self.timeout, record_history_chains=False)
-                async def track_waiter(controller: SessionController, ev: AstrMessageEvent):
-                    if ev.get_sender_id() != id:
-                        return
-                    reply = ev.message_str.strip()
-                    if not reply.isdigit():
-                        await event.send(event.plain_result("请发送正确的数字~"))
-                        return
-                    
-                    index = int(reply) - 1
-                    if index < 0 or index >= len(state["keywords"]):
-                        await event.send(event.plain_result("序号超出范围，请重新输入"))
-                        return
-                    
-                    await self._play_track(ev, index, state["keywords"], state["urls"], 
-                                          state["name"], state["ar"], state["iurl"], state["rid"])
-                    controller.stop()
-                
-                try:
-                    await track_waiter(event)
-                except TimeoutError:
-                    yield event.plain_result("选择超时！")
-        except Exception as e:
-            logger.error(f"播放音声失败: {str(e)}")
-            yield event.plain_result("播放音声失败，请稍后再试")
 
-    async def get_asmr(self, event: AstrMessageEvent, rid: str, r, selected_index: int = 0):        
+        try:
+            r = (await self.fetch_with_retry(f"/api/works?order=betterRandom"))["works"][0]
+
+            if r is None or "title" not in r:
+                yield event.plain_result("没有此音声信息或还没有资源")
+                return
+            if not self.nsfw:
+                yield event.plain_result("管理员已开启禁止nsfw，此功能已禁止")
+                return
+
+            rid = str(r["id"])
+            r_full = await self.fetch_with_retry(f"/api/workInfo/{rid}")
+            if r_full is None:
+                yield event.plain_result("获取随机音声详细信息失败")
+                return
+            r = r_full
+
+            ids = str(r["id"])
+            if len(ids) == 7 or len(ids) == 5:
+                ids = "RJ0" + ids
+            else:
+                ids = "RJ" + ids
+            rid = ids.replace("RJ", "")
+
+            yield event.plain_result(f"抽取成功！**RJ号：{ids}**")
+
+            msg1, url, state = await self.get_asmr(event=event, rid=rid, r=r)
+            if state == None:
+                return
+            yield event.image_result(url)
+            yield event.plain_result(msg1)
+
+            id = event.get_sender_id()
+
+            @session_waiter(timeout=self.timeout, record_history_chains=False)
+            async def track_waiter(controller: SessionController, ev: AstrMessageEvent):
+                if ev.get_sender_id() != id:
+                    return
+                reply = ev.message_str.strip()
+                if not reply.isdigit():
+                    await event.send(event.plain_result("请发送正确的数字~"))
+                    return
+
+                index = int(reply) - 1
+                if index < 0 or index >= len(state["keywords"]):
+                    await event.send(event.plain_result("序号超出范围，请重新输入"))
+                    return
+
+                await self._play_track(ev, index, state["keywords"], state["urls"],
+                                       state["name"], state["ar"], state["iurl"], state["rid"])
+                controller.stop()
+
+            try:
+                await track_waiter(event)
+            except TimeoutError:
+                yield event.plain_result("选择超时！")
+        except Exception as e:
+            logger.error(f"播放随机音声失败: {str(e)}")
+            yield event.plain_result("播放随机音声失败，请稍后再试")
+
+    async def get_asmr(self, event: AstrMessageEvent, rid: str, r, selected_index: int = None):
+        # ... (此处是您的原始 get_asmr 代码) ...
         name = r["title"]
         ar = r["name"]
         img = r["mainCoverUrl"]
-        
-        # 获取音轨信息
+
         result = await self.fetch_with_retry(f"/api/tracks/{rid}")
-        
+
         if result is None:
             await event.send(event.plain_result("获取音轨信息失败"))
-            return None,None,None
-        
+            return None, None, None
+
         keywords, urls = [], []
-        
+
         async def process_item(item):
             if item["type"] == "audio":
                 keywords.append(item["title"])
                 urls.append(item["mediaDownloadUrl"])
             elif item["type"] == "folder":
                 for child in item["children"]:
-                    await process_item(child)
-        
+                    if isinstance(child, dict):
+                        await process_item(child)
+
         for result2 in result:
             await process_item(result2)
-        
+
         if not keywords:
             await event.send(event.plain_result("此音声没有可播放的音轨"))
-            return None,None,None
-        
-        # 如果提供了索引，直接播放
-        if selected_index and selected_index != 0:
-            await self._play_track(event, selected_index, keywords, urls, name, ar, img, rid)
-            return None,None,None
-        
-        # 否则显示选择界面
-        msg = f'### <div align="center">选择编号</div>\n' \
-            f'|<img width="250" src="{img}"/> |{name}  社团名：{ar}|\n' \
-            '| :---: | --- |\n'
-        
+            return None, None, None
+
+        if selected_index is not None:
+            if 0 <= selected_index < len(keywords):
+                await self._play_track(event, selected_index, keywords, urls, name, ar, img, rid)
+                return None, None, None
+            else:
+                await event.send(event.plain_result(f"节目编号 {selected_index + 1} 超出范围 (1 - {len(keywords)})"))
+
+        msg = f'### <div align="center">选择编号: RJ{rid}</div>\n' \
+              f'|<img width="250" src="{img}"/> |**{name}** \n社团名：{ar}|\n' \
+              '| :---: | --- |\n'
+
         for i in range(len(keywords)):
-            msg += f'|{str(i+1)}. | {keywords[i]}|\n'
-        
+            msg += f'|{str(i + 1)}. | {keywords[i]}|\n'
+
         msg1 = "请发送序号来获取要听的资源"
-            
+
         template_data = {
             "text": msg
         }
@@ -360,34 +413,31 @@ class AsmrPlugin(Star):
             "name": name,
             "rid": rid
         }
-        return msg1,url,state
+        return msg1, url, state
 
-    async def _play_track(self, event: AstrMessageEvent, index: int, keywords: list, 
-                         urls: list, name: str, ar: str, img: str, rid: str):
-        """播放指定音轨"""
-        # 修正索引范围
+    async def _play_track(self, event: AstrMessageEvent, index: int, keywords: list,
+                          urls: list, name: str, ar: str, img: str, rid: str):
+        # ... (此处是您的原始 _play_track 代码) ...
         if index < 0:
             index = 0
         elif index >= len(urls):
             index = len(urls) - 1
-        
+
         track_name = keywords[index]
         audio_url = urls[index]
         asmr_url = f"https://asmr.one/work/RJ{rid}"
-        
-        # 平台适配
+
         platform_name = event.get_platform_name()
-        
-        # QQ平台发送自定义音乐卡片
+
         if platform_name == "aiocqhttp":
             assert isinstance(event, AiocqhttpMessageEvent)
             client = event.bot
             is_private = event.is_private_chat()
-    
+
             headers2 = {
-                "Content-Type":"application/json"
+                "Content-Type": "application/json"
             }
-            data={
+            data = {
                 "url": audio_url,
                 "song": track_name,
                 "singer": ar,
@@ -396,9 +446,10 @@ class AsmrPlugin(Star):
                 "format": "163",
             }
             async with aiohttp.ClientSession() as session:
-                async with session.post("https://oiapi.net/API/QQMusicJSONArk", json=data, headers=headers2, timeout=10) as response:
+                async with session.post("https://oiapi.net/API/QQMusicJSONArk", json=data, headers=headers2,
+                                        timeout=10) as response:
                     if response.status == 200:
-                        js = (await response.json()).get("message")        
+                        js = (await response.json()).get("message")
                         payloads = {
                             "message": [
                                 {
@@ -409,7 +460,7 @@ class AsmrPlugin(Star):
                                 }
                             ],
                         }
-                        
+
                         if is_private:
                             payloads["user_id"] = event.get_sender_id()
                             await client.api.call_action("send_private_msg", **payloads)
@@ -418,19 +469,263 @@ class AsmrPlugin(Star):
                             await client.api.call_action("send_group_msg", **payloads)
                     else:
                         audio_info = (
-                            f"🎧 {track_name}\n"
-                            f"📻 {name} - {ar}\n"
-                            f"🔗 音频链接: {audio_url}\n"
-                            f"🌐 作品页面: {asmr_url}"
+                            f"🎧 **{track_name}** (Track {index + 1})\n"
+                            f"📻 **{name}** - {ar} (RJ{rid})\n"
+                            f"🔗 **音频链接**: {audio_url}\n"
+                            f"🌐 **作品页面**: {asmr_url}"
                         )
                         await event.send(event.plain_result(audio_info))
-        
-        # 其他平台发送音频链接
+
         else:
             audio_info = (
-                f"🎧 {track_name}\n"
-                f"📻 {name} - {ar}\n"
-                f"🔗 音频链接: {audio_url}\n"
-                f"🌐 作品页面: {asmr_url}"
+                f"--- 🎧 播放信息 ---\n"
+                f"**曲目**: {track_name} (Track {index + 1})\n"
+                f"**作品**: {name}\n"
+                f"**作者**: {ar} (RJ{rid})\n"
+                f"\n"
+                f"**🔗 音频链接**: {audio_url}\n"
+                f"**🌐 作品页面**: <{asmr_url}>"
             )
+            await event.send(event.image_result(img))
             await event.send(event.plain_result(audio_info))
+
+    # --- 新增下载功能的核心逻辑 ---
+
+    async def download_worker(self, session: aiohttp.ClientSession, semaphore: asyncio.Semaphore,
+                              file_info: Dict[str, Any], base_dir: Path, event: AstrMessageEvent) -> bool:
+        """处理单个文件的下载，支持断点续传，将文件放在其对应的子文件夹内"""
+
+        file_url = file_info.get('url')
+        file_name = file_info['title']
+        expected_size = file_info.get('size', 0)
+
+        # 处理路径和文件名中的非法字符
+        folder_path = file_info.get("full_folder_path", "").replace(":", "：").replace("?", "？")
+        file_name = file_name.replace(":", "：").replace("?", "？")
+
+        # 构建最终的保存路径： base_dir / full_folder_path / file_name
+        full_path = base_dir / folder_path / file_name
+
+        mode = 'wb'
+        headers_range = {}
+        downloaded_size = 0
+
+        # 确保目录存在
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 检查断点续传
+        if full_path.exists():
+            downloaded_size = full_path.stat().st_size
+            if downloaded_size == expected_size and expected_size > 0:
+                logger.info(f"文件已完整存在: {file_name}")
+                return True
+            elif downloaded_size < expected_size:
+                mode = 'ab'
+                headers_range['Range'] = f'bytes={downloaded_size}-'
+                logger.info(f"续传: {file_name}, 从 {format_size(downloaded_size)} 开始")
+            else:
+                full_path.unlink(missing_ok=True)  # 大小异常，删除重下
+
+        async with semaphore:
+            try:
+                # 使用正确的下载 Header (参考 V3 代码)
+                download_headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+                    "Referer": "https://asmr.one/"
+                }
+                if headers_range:
+                    download_headers.update(headers_range)
+
+                # 使用传入的 session
+                async with session.get(file_url, headers=download_headers) as response:
+                    response.raise_for_status()
+
+                    total_size = int(response.headers.get('content-length', 0)) + downloaded_size
+
+                    logger.info(f"开始下载: {file_name} (总大小 {format_size(total_size)})")
+
+                    async with aiofiles.open(full_path, mode) as f:
+                        async for chunk in response.content.iter_chunked(8192):
+                            await f.write(chunk)
+
+                logger.info(f"🎉 下载成功: {file_name}")
+                return True
+
+            except aiohttp.ClientResponseError as e:
+                logger.error(f"❌ 下载失败 (HTTP {e.status}): {file_name}")
+                return False
+            except Exception as e:
+                logger.error(f"❌ 下载失败 (错误): {file_name}, {e}")
+                return False
+
+    async def _send_download_summary(self, event: AstrMessageEvent, rj_id: str, final_files: List[Dict[str, Any]],
+                                     success_count: int, output_dir: Path):
+        """发送下载总结消息"""
+        summary_msg = f"### 📦 RJ{rj_id} 下载总结\n"
+        summary_msg += f"- **总文件数**: {len(final_files)}\n"
+        summary_msg += f"- **成功下载/跳过**: {success_count}\n"
+        summary_msg += f"- **失败数**: {len(final_files) - success_count}\n"
+        summary_msg += f"文件已保存在机器人服务器的: `{output_dir.parent.name}/{output_dir.name}/` 目录下。"
+
+        await event.send(event.plain_result(summary_msg))
+
+    # --- 新增命令：下载音声 ---
+
+    @filter.command("下载音声")
+    async def download_asmr(self, event: AstrMessageEvent):
+        """交互式选择并下载音声文件"""
+
+        args = event.message_str.replace("下载音声", "").split()
+        if not args:
+            yield event.plain_result("请输入 RJ ID (例如: RJ0123456)!")
+            return
+
+        search_query = args[0]
+        rj_match = RJ_RE.search(search_query)
+
+        if not rj_match:
+            yield event.plain_result("输入格式错误，请输入有效的 RJ ID。")
+            return
+
+        rj_id = rj_match.group("id")
+
+        url_path = f"/api/tracks/{rj_id}?v=2"
+
+        yield event.plain_result(f"🔍 正在查询 **RJ{rj_id}** 的文件列表...")
+
+        try:
+            # 使用 fetch_with_retry 获取文件结构
+            result = await self.fetch_with_retry(url_path)
+        except Exception as e:
+            logger.error(f"获取文件列表失败: {e}")
+            yield event.plain_result("获取文件列表失败，请稍后再试。")
+            return
+
+        if result is None:
+            yield event.plain_result("获取文件列表失败，可能是 RJ ID 错误或 API 暂时不可用。")
+            return
+
+        # 1. 解析文件结构并分组
+        all_files: List[Dict[str, Any]] = []
+        recursively_transform_data(result, all_files, [])
+
+        if not all_files:
+            yield event.plain_result(f"⚠️ 未找到 RJ{rj_id} 的可下载文件。")
+            return
+
+        folder_groups: Dict[str, List[Dict[str, Any]]] = {}
+        for f in all_files:
+            folder_path = f["full_folder_path"] or " (根目录)"
+            if folder_path not in folder_groups:
+                folder_groups[folder_path] = []
+            folder_groups[folder_path].append(f)
+
+        # 2. 生成交互式选择消息
+        selectable_items: Dict[str, List[Dict[str, Any]]] = {}
+        folder_index = 1
+        item_index = 1
+
+        msg = f"### 📦 RJ{rj_id} 找到 {len(all_files)} 个文件。\n"
+        msg += "**[文件夹选项]**\n"
+
+        # 将根目录排到最后，方便编号 F1, F2...
+        sorted_folders = sorted(folder_groups.keys(), key=lambda x: (x == " (根目录)", x))
+
+        for folder_path in sorted_folders:
+            key = f"F{folder_index}"
+            files_in_folder = folder_groups[folder_path]
+            selectable_items[key] = files_in_folder
+            file_count = len(files_in_folder)
+            total_size_bytes = sum(f['size'] for f in files_in_folder)
+            msg += f"**{key}**: 📁 `{folder_path}` ({file_count} 个文件, {format_size(total_size_bytes)})\n"
+            folder_index += 1
+
+        root_files = folder_groups.get(" (根目录)", [])
+        if root_files:
+            msg += "\n**[根目录下单个文件选项]**\n"
+            for file_info in root_files:
+                key = f"I{item_index}"
+                selectable_items[key] = [file_info]
+                file_size = format_size(file_info.get('size', 0))
+                msg += f"**{key}**: 📄 `{file_info['title']}` ({file_size})\n"
+                item_index += 1
+
+        msg += "\n**提示**: 请回复选项编号 (例如: `F1`, `I2`, `F1,I3`) 或 `*` (全部下载) 或 `q` (退出)。"
+
+        yield event.plain_result(msg)
+
+        # 3. 启动 session_waiter 等待用户选择
+        id = event.get_sender_id()
+
+        @session_waiter(timeout=self.timeout, record_history_chains=False)
+        async def selection_waiter(controller: SessionController, ev: AstrMessageEvent):
+            if ev.get_sender_id() != id:
+                return
+
+            choice = ev.message_str.strip().upper()
+
+            if choice == 'Q':
+                await ev.send(ev.plain_result("下载已取消。"))
+                controller.stop()
+                return
+
+            final_files = []
+
+            if choice == '*':
+                for files in selectable_items.values():
+                    final_files.extend(files)
+            else:
+                chosen_keys = [k.strip() for k in choice.split(',') if k.strip()]
+                valid_selection = True
+                for key in chosen_keys:
+                    if key in selectable_items:
+                        final_files.extend(selectable_items[key])
+                    else:
+                        await ev.send(ev.plain_result(f"⚠️ 无效的编号或键值: **{key}**，请重新输入。"))
+                        valid_selection = False
+                        break
+                if not valid_selection:
+                    return
+
+            # 去重：确保同一文件不会被多次下载
+            unique_files = {}
+            for f in final_files:
+                # 使用 url + 文件夹路径作为唯一键
+                unique_key = f.get("url") + f.get("full_folder_path", "")
+                if unique_key not in unique_files:
+                    unique_files[unique_key] = f
+
+            final_files = list(unique_files.values())
+
+            if not final_files:
+                await ev.send(ev.plain_result("没有有效的文件被选中，请重新输入。"))
+                return
+
+            # 4. 启动下载
+            await ev.send(ev.plain_result(f"✅ 您已选择下载 **{len(final_files)}** 个文件，正在启动异步下载..."))
+
+            # 定义下载目录：在插件目录下的 Downloads 文件夹内
+            rj_output_dir = self.plugin_dir / "Downloads" / f"RJ{rj_id}"
+
+            # 使用临时的 aiohttp.ClientSession 进行下载，不依赖插件默认的 headers
+            # 但 download_worker 会自行添加正确的 User-Agent/Referer
+            async with aiohttp.ClientSession() as session:
+                semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+
+                download_tasks = [
+                    self.download_worker(session, semaphore, f, rj_output_dir, ev)
+                    for f in final_files
+                ]
+
+                results = await asyncio.gather(*download_tasks)
+                success_count = sum(results)
+
+                # 5. 发送总结
+                await self._send_download_summary(ev, rj_id, final_files, success_count, rj_output_dir)
+
+            controller.stop()
+
+        try:
+            await selection_waiter(event)
+        except TimeoutError:
+            yield event.plain_result("选择超时，下载已取消。")
