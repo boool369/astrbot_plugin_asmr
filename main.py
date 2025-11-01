@@ -2,16 +2,16 @@ import re
 import os
 import random
 import aiohttp
-import asyncio  # **新增导入**
-import aiofiles  # **新增导入**
+import asyncio
+import aiofiles
 from typing import Dict, Any, List, Tuple
-from tqdm import tqdm  # **新增导入 (用于下载日志)**
+from tqdm import tqdm
 from pathlib import Path
 from math import ceil
 
 from astrbot.api.event import filter, AstrMessageEvent
-import astrbot.api.message_components as Comp
-from astrbot.api.message_components import Node, Plain, Image as CompImage
+# 导入所需的组件类
+from astrbot.api.message_components import Node, Plain, Button, ActionButton, ButtonRow
 from astrbot.api.star import Context, Star, register
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.utils.session_waiter import (
@@ -27,7 +27,6 @@ from astrbot import logger
 headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0'
 }
-# 使用 V3 代码中稳定的 API 列表
 BASE_URLS = [
     "https://api.asmr.one",
     "https://api.asmr-100.com",
@@ -61,7 +60,6 @@ def recursively_transform_data(data: List[Dict[str, Any]], all_files: List[Dict[
             if "children" in item:
                 recursively_transform_data(item["children"], all_files, new_path)
         elif item_type in ["text", "image", "audio"]:
-            # 仅包含下载所需的核心信息
             file_info = {
                 "title": item_title,
                 "url": item.get("mediaDownloadUrl"),
@@ -77,17 +75,16 @@ def recursively_transform_data(data: List[Dict[str, Any]], all_files: List[Dict[
 @register(
     "astrbot_plugin_asmr",
     "CCYellowStar2",
-    "ASMR音声搜索、播放与下载",  # 更新描述
-    "2.0",  # 更新版本号
+    "ASMR音声搜索、播放与下载",
+    "2.1",  # 版本号更新
     "https://github.com/CCYellowStar2/astrbot_plugin_asmr"
 )
 class AsmrPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
-        # 初始化配置项
         self.timeout = 30
         self.base_urls = BASE_URLS
-        self.current_api_index = 0  # 当前使用的API索引
+        self.current_api_index = 0
         self.plugin_dir = Path(__file__).parent
         self.template_path = self.plugin_dir / "md.html"
         self.nsfw = config.get("enable_nsfw", True)
@@ -104,14 +101,13 @@ class AsmrPlugin(Star):
     async def fetch_with_retry(self, url_path: str, params=None, max_retries=4):
         """带重试机制的API请求"""
         errors = []
-        # 使用正确的 headers 来模拟浏览器访问 API
         api_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
             "Origin": "https://asmr.one",
             "Referer": "https://asmr.one/",
             "Accept": "application/json"
         }
-        async with aiohttp.ClientSession(headers=api_headers) as session:  # 使用增强的 headers
+        async with aiohttp.ClientSession(headers=api_headers) as session:
             for attempt in range(max_retries):
                 current_api = self.get_current_api()
                 url = f"{current_api}{url_path}"
@@ -130,16 +126,69 @@ class AsmrPlugin(Star):
         logger.error(error_msg)
         return None
 
-    # --- 搜索和播放功能 (与您提供的原代码相同) ---
+    # --- 命令：音声帮助 (新增交互式卡片菜单) ---
+
+    @filter.command("音声帮助")
+    async def asmr_help(self, event: AstrMessageEvent):
+        """显示本ASMR插件的所有功能和用法示例，使用交互式卡片。"""
+
+        title_node = Node(
+            Plain("### 🎧 ASMR 音声插件功能\n"),
+            Plain("本插件提供 ASMR 音声的搜索、播放与下载服务。\n")
+        )
+
+        features_node = Node(
+            Plain("--- **主要功能** ---\n"),
+            Plain("1. 🔍 **搜音声**: 通过关键词/标签查找作品。\n"),
+            Plain("2. ⏯️ **听音声**: 通过 RJ 号和音轨编号播放作品。\n"),
+            Plain("3. 🎲 **随机音声**: 快速获取并播放一个随机作品。\n"),
+            Plain("4. 💾 **下载音声**: 交互式选择文件或文件夹下载到服务器。\n"),
+            Plain("---")
+        )
+
+        button_row = ButtonRow(
+            ActionButton(
+                id="search_help",
+                label="🔍 搜索示例",
+                style=Button.Style.PRIMARY,
+                text="搜音声 治愈/耳语 1"
+            ),
+            ActionButton(
+                id="play_help",
+                label="⏯️ 播放帮助",
+                style=Button.Style.PRIMARY,
+                text="听音声 RJ123456 1"
+            ),
+            ActionButton(
+                id="download_info",
+                label="💾 下载说明",
+                style=Button.Style.DANGER,
+                text="下载音声 RJ"  # 引导用户输入RJ号
+            )
+        )
+
+        yield event.node_result(
+            title_node,
+            features_node,
+            Plain("\n💡 **点击下方按钮可快速了解功能或开始使用!**"),
+            button_row
+        )
+
+        # 兼容不支持组件的平台，提供纯文本提示
+        if event.get_platform_name() not in ["discord", "kaiheila"]:  # 假设这些平台支持组件
+            yield event.plain_result(
+                "您也可以直接输入命令，例如: `搜音声 伪娘/催眠 1` 或 `下载音声 RJ0123456`"
+            )
+
+    # --- 命令：搜音声 (搜索功能) ---
 
     @filter.command("搜音声")
     async def search_asmr(self, event: AstrMessageEvent):
-        # ... (此处是您的原始 search_asmr 代码) ...
         args = event.message_str.replace("搜音声", "").split()
         if not args:
             yield event.plain_result("请输入搜索关键词(用'/'分割不同tag)和搜索页数(可选)！比如'搜音声 伪娘/催眠 1'")
             return
-
+        # ... (搜索逻辑与原代码相同) ...
         y = 1
         keyword = ""
         if len(args) == 1:
@@ -184,7 +233,6 @@ class AsmrPlugin(Star):
                     yield event.plain_result(f"此搜索结果最多{max_pages}页")
                     return
 
-            # 处理搜索结果
             title, ars, imgs, rid = [], [], [], []
             for result2 in r["works"]:
                 title.append(result2["title"])
@@ -197,9 +245,6 @@ class AsmrPlugin(Star):
                     ids = "RJ" + ids
                 rid.append(ids)
 
-            # --- Discord/跨平台 适配逻辑 ---
-            platform_name = event.get_platform_name()
-
             msg = ""
             for i in range(len(title)):
                 msg += f"**{i + 1}.** 【{rid[i]}】 **{title[i]}** - {ars[i]}\n"
@@ -209,14 +254,15 @@ class AsmrPlugin(Star):
             yield event.plain_result(f"### 🔍 搜索结果 (第 {r['pagination']['currentPage']} 页)\n" + msg)
             yield event.image_result(imgs[0])
 
-
         except Exception as e:
             logger.error(f"搜索音声失败: {str(e)}")
             yield event.plain_result("搜索音声失败，请稍后再试")
 
+    # --- 命令：听音声 (播放功能) ---
+
     @filter.command("听音声")
     async def play_asmr(self, event: AstrMessageEvent):
-        # ... (此处是您的原始 play_asmr 代码) ...
+        # ... (播放逻辑与原代码相同) ...
         args = event.message_str.replace("听音声", "").split()
         substrings = ["RJ", "rj", "Rj", "rJ"]
 
@@ -288,7 +334,7 @@ class AsmrPlugin(Star):
 
     @filter.command("随机音声")
     async def play_Random_asmr(self, event: AstrMessageEvent):
-        # ... (此处是您的原始 play_Random_asmr 代码) ...
+        # ... (随机播放逻辑与原代码相同) ...
         yield event.plain_result(f"正在随机抽取音声！")
 
         try:
@@ -352,7 +398,7 @@ class AsmrPlugin(Star):
             yield event.plain_result("播放随机音声失败，请稍后再试")
 
     async def get_asmr(self, event: AstrMessageEvent, rid: str, r, selected_index: int = None):
-        # ... (此处是您的原始 get_asmr 代码) ...
+        # ... (获取音轨和渲染逻辑与原代码相同) ...
         name = r["title"]
         ar = r["name"]
         img = r["mainCoverUrl"]
@@ -417,7 +463,7 @@ class AsmrPlugin(Star):
 
     async def _play_track(self, event: AstrMessageEvent, index: int, keywords: list,
                           urls: list, name: str, ar: str, img: str, rid: str):
-        # ... (此处是您的原始 _play_track 代码) ...
+        # ... (播放音轨逻辑与原代码相同) ...
         if index < 0:
             index = 0
         elif index >= len(urls):
@@ -489,31 +535,26 @@ class AsmrPlugin(Star):
             await event.send(event.image_result(img))
             await event.send(event.plain_result(audio_info))
 
-    # --- 新增下载功能的核心逻辑 ---
+    # --- 下载功能的核心逻辑 ---
 
     async def download_worker(self, session: aiohttp.ClientSession, semaphore: asyncio.Semaphore,
                               file_info: Dict[str, Any], base_dir: Path, event: AstrMessageEvent) -> bool:
-        """处理单个文件的下载，支持断点续传，将文件放在其对应的子文件夹内"""
+        """处理单个文件的下载，支持断点续传"""
 
         file_url = file_info.get('url')
         file_name = file_info['title']
         expected_size = file_info.get('size', 0)
 
-        # 处理路径和文件名中的非法字符
         folder_path = file_info.get("full_folder_path", "").replace(":", "：").replace("?", "？")
         file_name = file_name.replace(":", "：").replace("?", "？")
-
-        # 构建最终的保存路径： base_dir / full_folder_path / file_name
         full_path = base_dir / folder_path / file_name
 
         mode = 'wb'
         headers_range = {}
         downloaded_size = 0
 
-        # 确保目录存在
         full_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 检查断点续传
         if full_path.exists():
             downloaded_size = full_path.stat().st_size
             if downloaded_size == expected_size and expected_size > 0:
@@ -524,11 +565,10 @@ class AsmrPlugin(Star):
                 headers_range['Range'] = f'bytes={downloaded_size}-'
                 logger.info(f"续传: {file_name}, 从 {format_size(downloaded_size)} 开始")
             else:
-                full_path.unlink(missing_ok=True)  # 大小异常，删除重下
+                full_path.unlink(missing_ok=True)
 
         async with semaphore:
             try:
-                # 使用正确的下载 Header (参考 V3 代码)
                 download_headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
                     "Referer": "https://asmr.one/"
@@ -536,7 +576,6 @@ class AsmrPlugin(Star):
                 if headers_range:
                     download_headers.update(headers_range)
 
-                # 使用传入的 session
                 async with session.get(file_url, headers=download_headers) as response:
                     response.raise_for_status()
 
@@ -569,7 +608,7 @@ class AsmrPlugin(Star):
 
         await event.send(event.plain_result(summary_msg))
 
-    # --- 新增命令：下载音声 ---
+    # --- 命令：下载音声 (交互式下载) ---
 
     @filter.command("下载音声")
     async def download_asmr(self, event: AstrMessageEvent):
@@ -588,13 +627,11 @@ class AsmrPlugin(Star):
             return
 
         rj_id = rj_match.group("id")
-
         url_path = f"/api/tracks/{rj_id}?v=2"
 
         yield event.plain_result(f"🔍 正在查询 **RJ{rj_id}** 的文件列表...")
 
         try:
-            # 使用 fetch_with_retry 获取文件结构
             result = await self.fetch_with_retry(url_path)
         except Exception as e:
             logger.error(f"获取文件列表失败: {e}")
@@ -605,7 +642,6 @@ class AsmrPlugin(Star):
             yield event.plain_result("获取文件列表失败，可能是 RJ ID 错误或 API 暂时不可用。")
             return
 
-        # 1. 解析文件结构并分组
         all_files: List[Dict[str, Any]] = []
         recursively_transform_data(result, all_files, [])
 
@@ -620,7 +656,6 @@ class AsmrPlugin(Star):
                 folder_groups[folder_path] = []
             folder_groups[folder_path].append(f)
 
-        # 2. 生成交互式选择消息
         selectable_items: Dict[str, List[Dict[str, Any]]] = {}
         folder_index = 1
         item_index = 1
@@ -628,7 +663,6 @@ class AsmrPlugin(Star):
         msg = f"### 📦 RJ{rj_id} 找到 {len(all_files)} 个文件。\n"
         msg += "**[文件夹选项]**\n"
 
-        # 将根目录排到最后，方便编号 F1, F2...
         sorted_folders = sorted(folder_groups.keys(), key=lambda x: (x == " (根目录)", x))
 
         for folder_path in sorted_folders:
@@ -654,7 +688,6 @@ class AsmrPlugin(Star):
 
         yield event.plain_result(msg)
 
-        # 3. 启动 session_waiter 等待用户选择
         id = event.get_sender_id()
 
         @session_waiter(timeout=self.timeout, record_history_chains=False)
@@ -687,10 +720,8 @@ class AsmrPlugin(Star):
                 if not valid_selection:
                     return
 
-            # 去重：确保同一文件不会被多次下载
             unique_files = {}
             for f in final_files:
-                # 使用 url + 文件夹路径作为唯一键
                 unique_key = f.get("url") + f.get("full_folder_path", "")
                 if unique_key not in unique_files:
                     unique_files[unique_key] = f
@@ -701,14 +732,10 @@ class AsmrPlugin(Star):
                 await ev.send(ev.plain_result("没有有效的文件被选中，请重新输入。"))
                 return
 
-            # 4. 启动下载
             await ev.send(ev.plain_result(f"✅ 您已选择下载 **{len(final_files)}** 个文件，正在启动异步下载..."))
 
-            # 定义下载目录：在插件目录下的 Downloads 文件夹内
             rj_output_dir = self.plugin_dir / "Downloads" / f"RJ{rj_id}"
 
-            # 使用临时的 aiohttp.ClientSession 进行下载，不依赖插件默认的 headers
-            # 但 download_worker 会自行添加正确的 User-Agent/Referer
             async with aiohttp.ClientSession() as session:
                 semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
@@ -720,7 +747,6 @@ class AsmrPlugin(Star):
                 results = await asyncio.gather(*download_tasks)
                 success_count = sum(results)
 
-                # 5. 发送总结
                 await self._send_download_summary(ev, rj_id, final_files, success_count, rj_output_dir)
 
             controller.stop()
