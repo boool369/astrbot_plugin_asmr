@@ -10,7 +10,7 @@ from pathlib import Path
 from math import ceil
 
 from astrbot.api.event import filter, AstrMessageEvent
-# 确保只导入 Plain，避免 Import Error
+# 确保只导入 Plain
 from astrbot.api.message_components import Plain 
 from astrbot.api.star import Context, Star, register
 from astrbot.core.config.astrbot_config import AstrBotConfig
@@ -21,9 +21,9 @@ from astrbot.core.utils.session_waiter import (
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
-from astrbot.api import logger # <--- 修正: 使用 astrbot.api.logger 解决兼容性问题
+from astrbot.api import logger 
 
-# --- 全局配置和常量 ---
+# --- 全局常量（不变） ---
 
 BASE_URLS = [
     "https://api.asmr.one",
@@ -33,7 +33,6 @@ BASE_URLS = [
 ]
 # 匹配 RJ+数字 或 纯数字
 RJ_RE = re.compile(r"(?:RJ)?(?P<id>\d+)", re.IGNORECASE) 
-MAX_CONCURRENT_DOWNLOADS = 3 
 
 # --- 辅助函数：文件处理和格式化 ---
 
@@ -71,7 +70,7 @@ def recursively_transform_data(data: List[Dict[str, Any]], all_files: List[Dict[
     "astrbot_plugin_asmr",
     "boool369",
     "ASMR音声搜索、播放与下载", 
-    "3.2", # 最终修正版本号
+    "3.3", # 配置重构版本
     "https://github.com/boool369/astrbot_plugin_asmr" 
 )
 class AsmrPlugin(Star):
@@ -82,8 +81,15 @@ class AsmrPlugin(Star):
         self.current_api_index = 0
         self.plugin_dir = Path(__file__).parent
         self.template_path = self.plugin_dir / "md.html"
+        
+        # --- 读取配置项 ---
+        # 使用 .get(key, default_value) 确保没有配置时也能正常工作
         self.nsfw = config.get("enable_nsfw", True)
-        logger.info("[ASMR Plugin V3.2] 初始化成功。命令: asmr帮助, asmr下载, 搜音声, 听音声, 随机音声。")
+        self.download_base_dir = Path(config.get("download_base_dir", "Downloads/ASMR_Files"))
+        self.max_concurrent_downloads = config.get("max_concurrent_downloads", 3)
+        # ------------------
+        
+        logger.info(f"[ASMR Plugin V3.3] 初始化成功。NSFW:{self.nsfw}, 下载路径:{self.download_base_dir}, 并发:{self.max_concurrent_downloads}")
 
     async def rotate_api(self):
         """切换到下一个API端点"""
@@ -130,7 +136,7 @@ class AsmrPlugin(Star):
         """显示本ASMR插件的所有功能和用法示例。"""
         
         help_message = (
-            "### 🎧 ASMR 音声插件功能 (V3.2 最终版)\n"
+            "### 🎧 ASMR 音声插件功能 (V3.3 配置版)\n"
             "---"
             "**1. 🔍 搜索功能**\n"
             "   - **命令**: `搜音声 <关键词>/<标签> [页数]`\n"
@@ -144,12 +150,15 @@ class AsmrPlugin(Star):
             "   - **命令**: `asmr下载 <RJ号>`\n"
             "   - **功能**: 启动交互式文件/文件夹选择下载。\n"
             "---"
-            "请注意: 所有命令前请加上机器人的前缀。"
+            "当前配置:\n"
+            f"   - NSFW 启用: {self.nsfw}\n"
+            f"   - 下载根目录: {self.download_base_dir}\n"
+            f"   - 并发数: {self.max_concurrent_downloads}\n"
         )
         
         yield event.plain_result(help_message)
             
-    # --- 命令：搜音声 ---
+    # --- 命令：搜音声 (此部分不变) ---
     
     @filter.command("搜音声")
     async def search_asmr(self, event: AstrMessageEvent):
@@ -224,7 +233,7 @@ class AsmrPlugin(Star):
             logger.error(f"[Search Error] 搜索音声失败: {str(e)}")
             yield event.plain_result("搜索音声失败，请稍后再试")
 
-    # --- 命令：听音声 ---
+    # --- 命令：听音声 (此部分不变) ---
     
     @filter.command("听音声")
     async def play_asmr(self, event: AstrMessageEvent):
@@ -291,6 +300,7 @@ class AsmrPlugin(Star):
 
     @filter.command("随机音声")
     async def play_Random_asmr(self, event: AstrMessageEvent):
+        # ... (此部分不变) ...
         yield event.plain_result(f"正在随机抽取音声！")
         
         try:
@@ -350,6 +360,7 @@ class AsmrPlugin(Star):
             yield event.plain_result("播放随机音声失败，请稍后再试")
 
     async def get_asmr(self, event: AstrMessageEvent, rid: str, r, selected_index: int = None):
+        # ... (此部分不变) ...
         name = r["title"]
         ar = r["name"]
         img = r["mainCoverUrl"]
@@ -399,7 +410,6 @@ class AsmrPlugin(Star):
         template_data = {
             "text": msg
         }
-        # 依赖于插件目录下存在的 md.html 文件
         with open(self.template_path, 'r', encoding='utf-8') as f:
             meme_help_tmpl = f.read()
         url = await self.html_render(meme_help_tmpl, template_data)
@@ -417,6 +427,7 @@ class AsmrPlugin(Star):
 
     async def _play_track(self, event: AstrMessageEvent, index: int, keywords: list, 
                           urls: list, name: str, ar: str, img: str, rid: str):
+        # ... (此部分不变) ...
         if index < 0:
             index = 0
         elif index >= len(urls):
@@ -537,7 +548,11 @@ class AsmrPlugin(Star):
                     logger.info(f"[Download] 开始下载: {file_name} (总大小 {format_size(total_size)})")
                     
                     async with aiofiles.open(full_path, mode) as f:
-                        async for chunk in response.content.iter_chunked(8192):
+                        # 使用 tqdm 封装 iter_chunked (仅用于记录日志，不涉及终端输出)
+                        pbar_iter = response.content.iter_chunked(8192)
+                        # 注意：由于是在插件后台运行，这里不适合直接显示 tqdm 终端进度条
+                        # 仅保留 iter_chunked 的功能
+                        async for chunk in pbar_iter: 
                             await f.write(chunk)
 
                 logger.info(f"[Download] 🎉 下载成功: {file_name}")
@@ -556,7 +571,8 @@ class AsmrPlugin(Star):
         summary_msg += f"- **总文件数**: {len(final_files)}\n"
         summary_msg += f"- **成功下载/跳过**: {success_count}\n"
         summary_msg += f"- **失败数**: {len(final_files) - success_count}\n"
-        summary_msg += f"文件已保存在机器人服务器的: `{output_dir.parent.name}/{output_dir.name}/` 目录下。"
+        # 优化路径显示，使用相对路径
+        summary_msg += f"文件已保存在机器人服务器的: `{self.download_base_dir.name}/{output_dir.name}/` 目录下。"
         
         await event.send(event.plain_result(summary_msg))
 
@@ -683,10 +699,12 @@ class AsmrPlugin(Star):
             
             await ev.send(event.plain_result(f"✅ 您已选择下载 **{len(final_files)}** 个文件，正在启动异步下载..."))
             
-            rj_output_dir = self.plugin_dir / "Downloads" / f"RJ{rj_id}"
+            # 使用配置中的下载根目录
+            rj_output_dir = self.download_base_dir / f"RJ{rj_id}"
             
             async with aiohttp.ClientSession() as session: 
-                semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+                # 使用配置中的最大并发数
+                semaphore = asyncio.Semaphore(self.max_concurrent_downloads)
                 
                 download_tasks = [
                     self.download_worker(session, semaphore, f, rj_output_dir, ev)
