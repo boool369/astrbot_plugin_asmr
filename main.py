@@ -102,7 +102,7 @@ class AsmrPlugin(Star):
             yield event.plain_result("请正确输入搜索关键词(用'/'分割不同tag)和搜索页数(可选)！比如'搜音声 伪娘/催眠 1'")
             return
 
-        yield event.plain_result(f"正在搜索音声{keyword}，第{y}页！")
+        yield event.plain_result(f"正在搜索音声`{keyword.replace('%20', ' / ')}`，第{y}页！")
         if not self.nsfw:
             keyword = keyword + "%20%24-age%3Aadult%24"
         try:
@@ -144,33 +144,21 @@ class AsmrPlugin(Star):
                     ids = "RJ" + ids
                 rid.append(ids)
             
-            # 生成Markdown格式结果
-            msg2 = f'### <div align="center">搜索结果</div>\n' \
-                    f'| 封面 | 序号 | RJ号 |\n' \
-                    '| --- | --- | --- |\n'
+            # --- Discord/跨平台 适配逻辑 ---
+            platform_name = event.get_platform_name()
             
             msg = ""
             for i in range(len(title)):
-                msg += str(i + 1) + ". 【" + rid[i] + "】 " + title[i] + "\n"
-                msg2 += f'|<img width="250" src="{imgs[i]}"/> | {str(i+1)}. |【{rid[i]}】|\n'
+                # 使用 Markdown 粗体和列表
+                msg += f"**{i + 1}.** 【{rid[i]}】 **{title[i]}** - {ars[i]}\n"
             
-            msg += "请发送听音声+RJ号+节目编号（可选）来获取要听的资源"
-            chain = []
-            # 渲染Markdown为图片
-            template_data = {
-                "text": msg2
-            }
-            with open(self.template_path, 'r', encoding='utf-8') as f:
-                meme_help_tmpl = f.read()
-            url = await self.html_render(meme_help_tmpl, template_data)
-            chain.append(CompImage.fromURL(url))
-            chain.append(Plain(msg))
-            node = Node(
-                uin=3974507586,
-                name="玖玖瑠",
-                content=chain
-            )
-            yield event.chain_result([node])
+            msg += "\n请发送 `听音声+RJ号+节目编号（可选）` 来获取要听的资源"
+            
+            # 优先使用纯文本和图片预览（跨平台兼容性更好）
+            yield event.plain_result(f"### 🔍 搜索结果 (第 {r['pagination']['currentPage']} 页)\n" + msg)
+            # 附加第一条结果的封面图片作为预览
+            yield event.image_result(imgs[0])
+            
             
         except Exception as e:
             logger.error(f"搜索音声失败: {str(e)}")
@@ -200,7 +188,7 @@ class AsmrPlugin(Star):
             return
         selected_index = int(args[1]) - 1 if len(args) > 1 and args[1].isdigit() else None
         
-        yield event.plain_result(f"正在查询音声信息！")
+        yield event.plain_result(f"正在查询音声信息！RJ{rid}")
         
         try:
                 # 获取音声信息
@@ -212,14 +200,17 @@ class AsmrPlugin(Star):
                 if not self.nsfw and r["nsfw"]==True:
                     yield event.plain_result("此音声为r18音声，管理员已禁止")
                     return
-                if selected_index:
-                    msg1,url,state=await self.get_asmr(event=event,rid=rid,r=r,selected_index=selected_index)
-                else:
-                    msg1,url,state=await self.get_asmr(event=event,rid=rid,r=r)
+                
+                # get_asmr 中已包含直接播放逻辑
+                msg1,url,state=await self.get_asmr(event=event,rid=rid,r=r,selected_index=selected_index)
+                
                 if state == None:
+                    # 如果 state 为 None，说明 get_asmr 已经直接播放或发送了错误消息
                     return
-                yield event.image_result(url)
-                yield event.plain_result(msg1)
+                
+                # 显示选择界面 (跨平台：图片 + 纯文本)
+                yield event.image_result(url) # url 此时是渲染音轨列表的图片
+                yield event.plain_result(msg1) # msg1 是提示信息
                 
                 id = event.get_sender_id()
                 @session_waiter(timeout=self.timeout, record_history_chains=False)
@@ -261,12 +252,29 @@ class AsmrPlugin(Star):
                     yield event.plain_result("没有此音声信息或还没有资源")
                     return
                 if not self.nsfw:
+                    # 即使 API 返回 NSFW，只要插件配置禁止，就拒绝执行后续流程
                     yield event.plain_result("管理员已开启禁止nsfw，此功能已禁止")
                     return
+                
+                # RJ 号处理
                 rid = str(r["id"])
-                if len(rid) == 7 or len(rid) == 5:
-                    rid = "0" + rid
-                yield event.plain_result("抽取成功！RJ号："+rid)
+                # 随机 API 返回的 workInfo 结构可能不完整，这里强制调用 workInfo 确保数据完整性
+                r_full = await self.fetch_with_retry(f"/api/workInfo/{rid}")
+                if r_full is None:
+                    yield event.plain_result("获取随机音声详细信息失败")
+                    return
+                r = r_full # 使用完整的 workInfo 数据
+                
+                # 重新计算 RJ 号，确保格式正确（原代码中此处逻辑可能不完整）
+                ids = str(r["id"])
+                if len(ids) == 7 or len(ids) == 5:
+                    ids = "RJ0" + ids
+                else:
+                    ids = "RJ" + ids
+                rid = ids.replace("RJ", "") # rid 变量保持纯数字
+                
+                yield event.plain_result(f"抽取成功！**RJ号：{ids}**")
+                
                 msg1,url,state=await self.get_asmr(event=event,rid=rid,r=r)
                 if state == None:
                     return
@@ -297,10 +305,10 @@ class AsmrPlugin(Star):
                 except TimeoutError:
                     yield event.plain_result("选择超时！")
         except Exception as e:
-            logger.error(f"播放音声失败: {str(e)}")
-            yield event.plain_result("播放音声失败，请稍后再试")
+            logger.error(f"播放随机音声失败: {str(e)}")
+            yield event.plain_result("播放随机音声失败，请稍后再试")
 
-    async def get_asmr(self, event: AstrMessageEvent, rid: str, r, selected_index: int = 0):        
+    async def get_asmr(self, event: AstrMessageEvent, rid: str, r, selected_index: int = None): # selected_index 默认改为 None
         name = r["title"]
         ar = r["name"]
         img = r["mainCoverUrl"]
@@ -320,7 +328,9 @@ class AsmrPlugin(Star):
                 urls.append(item["mediaDownloadUrl"])
             elif item["type"] == "folder":
                 for child in item["children"]:
-                    await process_item(child)
+                    # 确保递归调用是 awaitable
+                    if isinstance(child, dict):
+                        await process_item(child) 
         
         for result2 in result:
             await process_item(result2)
@@ -329,17 +339,23 @@ class AsmrPlugin(Star):
             await event.send(event.plain_result("此音声没有可播放的音轨"))
             return None,None,None
         
-        # 如果提供了索引，直接播放
-        if selected_index and selected_index != 0:
-            await self._play_track(event, selected_index, keywords, urls, name, ar, img, rid)
-            return None,None,None
+        # 如果提供了索引（且索引合法），直接播放
+        if selected_index is not None:
+            if 0 <= selected_index < len(keywords):
+                await self._play_track(event, selected_index, keywords, urls, name, ar, img, rid)
+                return None,None,None
+            else:
+                await event.send(event.plain_result(f"节目编号 {selected_index + 1} 超出范围 (1 - {len(keywords)})"))
+                # 继续显示音轨列表供用户选择
         
-        # 否则显示选择界面
-        msg = f'### <div align="center">选择编号</div>\n' \
-            f'|<img width="250" src="{img}"/> |{name}  社团名：{ar}|\n' \
+        # 否则显示选择界面 (使用原有的 HTML 渲染图片)
+        # Note: 保持原有逻辑，利用 html_render 渲染音轨列表图片，以支持所有平台
+        msg = f'### <div align="center">选择编号: RJ{rid}</div>\n' \
+            f'|<img width="250" src="{img}"/> |**{name}** \n社团名：{ar}|\n' \
             '| :---: | --- |\n'
         
         for i in range(len(keywords)):
+            # 兼容 Markdown 表格
             msg += f'|{str(i+1)}. | {keywords[i]}|\n'
         
         msg1 = "请发送序号来获取要听的资源"
@@ -417,20 +433,26 @@ class AsmrPlugin(Star):
                             payloads["group_id"] = event.get_group_id()
                             await client.api.call_action("send_group_msg", **payloads)
                     else:
+                        # Fallback to plain text if card fails
                         audio_info = (
-                            f"🎧 {track_name}\n"
-                            f"📻 {name} - {ar}\n"
-                            f"🔗 音频链接: {audio_url}\n"
-                            f"🌐 作品页面: {asmr_url}"
+                            f"🎧 **{track_name}** (Track {index+1})\n"
+                            f"📻 **{name}** - {ar} (RJ{rid})\n"
+                            f"🔗 **音频链接**: {audio_url}\n"
+                            f"🌐 **作品页面**: {asmr_url}"
                         )
                         await event.send(event.plain_result(audio_info))
         
-        # 其他平台发送音频链接
+        # Discord/其他平台发送音频链接 (使用 Markdown 增强可读性)
         else:
             audio_info = (
-                f"🎧 {track_name}\n"
-                f"📻 {name} - {ar}\n"
-                f"🔗 音频链接: {audio_url}\n"
-                f"🌐 作品页面: {asmr_url}"
+                f"--- 🎧 播放信息 ---\n"
+                f"**曲目**: {track_name} (Track {index+1})\n"
+                f"**作品**: {name}\n"
+                f"**作者**: {ar} (RJ{rid})\n"
+                f"\n"
+                f"**🔗 音频链接**: {audio_url}\n"
+                f"**🌐 作品页面**: <{asmr_url}>" # 使用尖括号确保链接在Discord中不会被转义
             )
+            # 附加作品封面图片
+            await event.send(event.image_result(img))
             await event.send(event.plain_result(audio_info))
