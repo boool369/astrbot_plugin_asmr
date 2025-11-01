@@ -1,9 +1,20 @@
 {
     "enable_nsfw": {
         "description": "是否启用nsfw搜索结果",
-        "hint": "开启后在发送包含nsfw的搜索结果",
+        "hint": "开启后在搜索时显示R18/NSFW结果",
         "type": "bool",
         "default": true
-    } 
-
+    },
+    "download_base_dir": {
+        "description": "下载文件的根目录相对路径",
+        "hint": "文件将保存在此目录下，例如 'Plugins/ASMR_Downloads'。",
+        "type": "str",
+        "default": "Downloads/ASMR_Files"
+    },
+    "max_concurrent_downloads": {
+        "description": "最大并发下载线程数",
+        "hint": "限制同时进行的文件下载数量，以避免网络拥堵或资源耗尽。",
+        "type": "int",
+        "default": 3
+    }
 }
