@@ -1,5 +1,5 @@
 name: astrbot_plugin_asmr # 这是你的插件的唯一识别名。
 desc: ASMR音声搜索与播放和下载 # 插件简短描述
-version: v2.2 # 插件版本号。格式：v1.1.1 或者 v1.1
+version: v3.1 # 插件版本号。格式：v1.1.1 或者 v1.1
 author: boool369 # 作者
 repo: https://github.com/boool369/astrbot_plugin_asmr # 插件的仓库地址
