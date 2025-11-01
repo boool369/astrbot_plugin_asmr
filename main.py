@@ -76,7 +76,7 @@ def recursively_transform_data(data: List[Dict[str, Any]], all_files: List[Dict[
     "astrbot_plugin_asmr",
     "CCYellowStar2",
     "ASMR音声搜索、播放与下载",
-    "2.1",  # 版本号更新
+    "2.2",  # 版本号更新
     "https://github.com/CCYellowStar2/astrbot_plugin_asmr"
 )
 class AsmrPlugin(Star):
@@ -126,9 +126,9 @@ class AsmrPlugin(Star):
         logger.error(error_msg)
         return None
 
-    # --- 命令：音声帮助 (新增交互式卡片菜单) ---
+    # --- 命令：ASMR 帮助 (已修改为 asmr帮助) ---
 
-    @filter.command("音声帮助")
+    @filter.command("asmr帮助")
     async def asmr_help(self, event: AstrMessageEvent):
         """显示本ASMR插件的所有功能和用法示例，使用交互式卡片。"""
 
@@ -142,7 +142,7 @@ class AsmrPlugin(Star):
             Plain("1. 🔍 **搜音声**: 通过关键词/标签查找作品。\n"),
             Plain("2. ⏯️ **听音声**: 通过 RJ 号和音轨编号播放作品。\n"),
             Plain("3. 🎲 **随机音声**: 快速获取并播放一个随机作品。\n"),
-            Plain("4. 💾 **下载音声**: 交互式选择文件或文件夹下载到服务器。\n"),
+            Plain("4. 💾 **asmr下载**: 交互式选择文件或文件夹下载到服务器。\n"),  # 注意：这里是新命令
             Plain("---")
         )
 
@@ -155,7 +155,7 @@ class AsmrPlugin(Star):
             ),
             ActionButton(
                 id="play_help",
-                label="⏯️ 播放帮助",
+                label="⏯️ 播放示例",
                 style=Button.Style.PRIMARY,
                 text="听音声 RJ123456 1"
             ),
@@ -163,7 +163,7 @@ class AsmrPlugin(Star):
                 id="download_info",
                 label="💾 下载说明",
                 style=Button.Style.DANGER,
-                text="下载音声 RJ"  # 引导用户输入RJ号
+                text="asmr下载 RJ"  # 引导用户启动新命令
             )
         )
 
@@ -174,13 +174,12 @@ class AsmrPlugin(Star):
             button_row
         )
 
-        # 兼容不支持组件的平台，提供纯文本提示
-        if event.get_platform_name() not in ["discord", "kaiheila"]:  # 假设这些平台支持组件
+        if event.get_platform_name() not in ["discord", "kaiheila"]:
             yield event.plain_result(
-                "您也可以直接输入命令，例如: `搜音声 伪娘/催眠 1` 或 `下载音声 RJ0123456`"
+                "您也可以直接输入命令，例如: `搜音声 伪娘/催眠 1` 或 `asmr下载 RJ0123456`"  # 提示新命令
             )
 
-    # --- 命令：搜音声 (搜索功能) ---
+    # --- 命令：搜音声 (搜索功能 - 未修改) ---
 
     @filter.command("搜音声")
     async def search_asmr(self, event: AstrMessageEvent):
@@ -258,7 +257,7 @@ class AsmrPlugin(Star):
             logger.error(f"搜索音声失败: {str(e)}")
             yield event.plain_result("搜索音声失败，请稍后再试")
 
-    # --- 命令：听音声 (播放功能) ---
+    # --- 命令：听音声 (播放功能 - 未修改) ---
 
     @filter.command("听音声")
     async def play_asmr(self, event: AstrMessageEvent):
@@ -535,7 +534,7 @@ class AsmrPlugin(Star):
             await event.send(event.image_result(img))
             await event.send(event.plain_result(audio_info))
 
-    # --- 下载功能的核心逻辑 ---
+    # --- 下载功能的核心逻辑 (未修改) ---
 
     async def download_worker(self, session: aiohttp.ClientSession, semaphore: asyncio.Semaphore,
                               file_info: Dict[str, Any], base_dir: Path, event: AstrMessageEvent) -> bool:
@@ -608,13 +607,13 @@ class AsmrPlugin(Star):
 
         await event.send(event.plain_result(summary_msg))
 
-    # --- 命令：下载音声 (交互式下载) ---
+    # --- 命令：ASMR 下载 (已修改为 asmr下载) ---
 
-    @filter.command("下载音声")
+    @filter.command("asmr下载")
     async def download_asmr(self, event: AstrMessageEvent):
         """交互式选择并下载音声文件"""
 
-        args = event.message_str.replace("下载音声", "").split()
+        args = event.message_str.replace("asmr下载", "").split()  # 注意：这里匹配新命令
         if not args:
             yield event.plain_result("请输入 RJ ID (例如: RJ0123456)!")
             return
